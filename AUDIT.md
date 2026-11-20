@@ -98,3 +98,91 @@ cannot be replicated locally.
 * Practice-case scores on make.fun's server may differ from H1 because
   the practice answers are the 04:30Z / 05:00Z reads, which are not
   public. Practice pays nothing; the final case decides the prizes.
+
+
+---
+
+## v2 rebuild (2026-11-20)
+
+**Why.** v1's official practice (dev) loss is 0.639495 while the dev
+leaders reach ~0.046, and — more importantly — the prize is decided by
+the final case f00 alone, whose regime (a multi-day history of refresh
+steps, 4.5-day horizon) v1's frozen-prior-centred design only partly
+fits. Two diagnoses, both verified against primary sources:
+
+1. **The practice answers are an intermediate state.** Scoring v1 and
+   the persistence baseline against the live page state of
+   2026-11-19T15:56Z (14,028 players, still current a day later) gives
+   0.252 / 2.527 locally, but the official practice scores are 0.639 /
+   ~1.51. Interpolating the answers in logit space between the frozen
+   snapshot and the live state, both official moments (persistence
+   loss ≈ 1.51 and typical miss ≈ 0.68 pp, RULES §45; v1's exact
+   0.639495) independently imply the answering reads sit at φ ≈ 0.62 of
+   the transition. v1's frozen prior applied the full transition at the
+   90-minute horizon — a horizon-blind overshoot.
+2. **The page moves in refresh steps.** The live page was byte-identical
+   at 2026-11-19T15:56Z and 2026-11-20T03:56Z (14,028 players tracked,
+   14,882 trophies earned, all 55 rates equal), i.e. frozen for 12+
+   hours after the launch catch-up. A step-process model, not a smooth
+   trend, is the right frame for the final case. A poller now records
+   the page state every 30 minutes (`snapshots.jsonl`, local only) to
+   catch the next refresh as calibration data.
+
+**What changed** (see the `main.py` docstring and README for detail):
+distinct-state step decomposition (`dE ~ a·dt + b·dN` per trophy,
+launch step excluded, pooled shrinkage), a separate players forecast,
+a 50/50 logit ensemble with the v1 dynamic median (weights grid-searched
+on the synthetic suites; the surface is flat between 0.4–0.6), a
+recent-states earners ceiling, story-funnel and platinum repairs, a
+jump-process spread with a floor (dynamic CAL 0.6 — the simulators
+alone would take it to ~0.45; 0.6 keeps margin for real-world model
+risk), and the sparse-history launch prior rebuilt around a single
+horizon completion fraction `s(h)` (τ = 1.55 h; `s(1.5 h) = 0.62` per
+diagnosis 1) driving both the pool surge and the earners growth
+(`ln G = 0.68 + 1.60·ln(rate0)`, fitted on the observed transition,
+residual sd 0.53 in log earners).
+
+**Backtests** (exact contest loss via `score.py`):
+
+| Test | v2 | v1 | Notes |
+|---|---|---|---|
+| Real holdout: frozen → live 15:56Z state (h = 746 min) | 0.2529 (cov 0.927) | 0.2523 (cov 0.945) | parity — the prior still nails the full transition |
+| Practice proxy at φ = 0.62 | 0.307 (cov 0.927) | 0.624 (cov 0.236) | expected official dev ≈ 0.31 vs the standing 0.639 |
+| Synthetic finals, realistic regime (12 seeds) | 0.179 | 0.221 | persistence 0.392, trend 0.322 |
+| Synthetic finals, continued-surge regime (6 seeds) | 0.164 | 0.186 | persistence 0.294, trend 0.325 |
+
+A smoke test on the two plausible real f00 shapes (two distinct states
+→ sparse path; three states with the inferred intermediate → dynamic
+path) produces sane medians and bands; an early version's spread
+exploded on the 3-state shape (short-step √dt normalisation of the
+launch step) and was replaced by the jump-process estimator.
+
+**External audits.** The design and numbers were audited by DeepSeek
+V4.1 Flash through two independent routes (OpenRouter and
+100milionseek). Points adopted: exclude/down-weight the launch step in
+the decomposition fit (adopted — exclusion), ceiling from recent
+states rather than pre-surge rates (adopted), refresh-timing risk and
+weekend effects (noted as limitations; the spread floor is the partial
+mitigation). Points not adopted, with reasons: cutting the v1 ensemble
+weight (the audits priced v1 by its *sparse-path* practice failure;
+in the dynamic regime its median is the strongest single component and
+the grid search chose 0.5 on dynamic backtests), and raising CAL to
+0.9–1.0 (the synthetic suites consistently punish it, +0.01–0.03 loss;
+0.6 already sits above the sim optimum as insurance).
+
+**Checks.** Determinism: p00 + p01 run twice, byte-identical. Format:
+55 rows, finite quantiles in [0.01, 99.99], non-decreasing, ≤ 65,536 B
+(2,779 B observed). Edge cases: single read, empty history, all-null
+rates, zero horizon — all valid. Runtime ~0.06 s for both practice
+cases (limit 8 s per case). Offline, stdlib only (json, math, os, re,
+sys, datetime, pathlib), no randomness, no wall-clock reads.
+
+**Known limitations (v2).** The intermediate practice state is inferred
+(φ ≈ 0.62), not observed, so the practice number is an expectation, not
+a guarantee; the final case is the one that pays. The decomposition's
+`a`/`b` are collinear when a history has very few steps — shrinkage
+priors carry those cases. Refresh timing relative to the target read
+(a freeze vs a just-landed refresh) is irreducible variance that the
+spread covers only in expectation. The final history's weekend segment
+is short (cut is Saturday 11:30Z), so weekend earners behaviour is
+extrapolated, not measured.
